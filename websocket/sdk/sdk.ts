@@ -17,84 +17,103 @@ export enum State {
     CLOSED,
 }
 
-export enum Ack {
-    Success = "Success",
-    Timeout = "Timeout",
-    Loginfailed = "LoginFailed",
-    Logined = "Logined",
+export class Seq {
+    static num: number = 0
+    static Next() {
+        Seq.num++
+        Seq.num = Seq.num % 65536
+        return Seq.num
+    }
 }
 
-
-export let doLogin = async (url: string): Promise<{ status: string, conn: w3cwebsocket }> => {
-    const LoginTimeout = 5 // 5 seconds
-    return new Promise((resolve, reject) => {
-        let conn = new w3cwebsocket(url)
-        conn.binaryType = "arraybuffer"
-
-        // 设置一个登陆超时器
-        let tr = setTimeout(() => {
-            resolve({ status: Ack.Timeout, conn: conn });
-        }, LoginTimeout * 1000);
-
-        conn.onopen = () => {
-            console.info("websocket open - readyState:", conn.readyState)
-
-            if (conn.readyState === w3cwebsocket.OPEN) {
-                clearTimeout(tr)
-                resolve({ status: Ack.Success, conn: conn });
-            }
-        }
-        conn.onerror = (error: Error) => {
-            clearTimeout(tr)
-            // console.debug(error)
-            resolve({ status: Ack.Loginfailed, conn: conn });
-        }
-    })
+export class Message {
+    sequence: number = 0;
+    type: number = 1;
+    message?: string;
+    from?: string; // sender
+    constructor(message?: string) {
+        this.message = message;
+        this.sequence = Seq.Next()
+    }
 }
 
-export class IMClient {
+export class Request {
+    sendTime: number
+    callback: (response: Message) => void
+    constructor(callback: (response: Message) => void) {
+        this.sendTime = Date.now()
+        this.callback = callback
+    }
+}
+
+export class Response {
+    success: boolean = false
+    message?: Message
+    constructor(success: boolean, message?: Message) {
+        this.success = success;
+        this.message = message;
+    }
+}
+
+export class WebsocketClient {
     wsurl: string
     state = State.INIT
     private conn: w3cwebsocket | null
-    private lastRead: number
+    private sendq = new Map<number, Request>()
     constructor(url: string, user: string) {
         this.wsurl = `${url}?user=${user}`
         this.conn = null
-        this.lastRead = Date.now()
     }
     // 1、登陆
-    async login(): Promise<{ status: string }> {
+    async login(): Promise<{ success: boolean }> {
         if (this.state == State.CONNECTED) {
-            return { status: Ack.Logined }
+            return { success: false }
         }
         this.state = State.CONNECTING
-
-        let { status, conn } = await doLogin(this.wsurl)
-        console.info("login - ", status)
-
-        if (status !== Ack.Success) {
-            this.state = State.INIT
-            return { status }
-        }
-        // overwrite onmessage
-        conn.onmessage = (evt: IMessageEvent) => {
-            try {
-
-            } catch (error) {
-                console.error(evt.data, error)
+        return new Promise((resolve, _) => {
+            let conn = new w3cwebsocket(this.wsurl)
+            conn.binaryType = "arraybuffer"
+            let returned = false
+            conn.onopen = () => {
+                console.info("websocket open - readyState:", conn.readyState)
+                if (conn.readyState === w3cwebsocket.OPEN) {
+                    returned = true
+                    resolve({ success: true })
+                }
             }
-        }
-        conn.onerror = (error) => {
-            console.info("websocket error: ", error)
-        }
-        conn.onclose = (e: ICloseEvent) => {
-            console.debug("event[onclose] fired")
-            this.onclose(e.reason)
-        }
-        this.conn = conn
-        this.state = State.CONNECTED
 
-        return { status }
+            // overwrite onmessage
+            conn.onmessage = (evt: IMessageEvent) => {
+                try {
+                    let msg = new Message();
+                    Object.assign(msg, JSON.parse(<string>evt.data))
+                    if (msg.type == 2) {
+                        let req = this.sendq.get(msg.sequence)
+                        if (req) {
+                            req.callback(msg)
+                        }
+                    } else if (msg.type == 3) {
+                        console.log(msg.message, msg.from)
+                    }
+                } catch (error) {
+                    console.error(evt.data, error)
+                }
+            }
+
+            conn.onerror = (error) => {
+                console.info("websocket error: ", error)
+                if (returned) {
+                    resolve({ success: false })
+                }
+            }
+
+            conn.onclose = (e: ICloseEvent) => {
+                console.debug("event[onclose] fired")
+                this.onclose(e.reason)
+            }
+            this.conn = conn
+            this.state = State.CONNECTED
+        })
     }
     logout() {
         if (this.state === State.CLOSEING) {
@@ -110,6 +129,24 @@ export class IMClient {
     private onclose(reason: string) {
         console.info("connection closed due to " + reason)
         this.state = State.CLOSED
+    }
+    async request(data: Message): Promise<Response> {
+        return new Promise((resolve, _) => {
+            let seq = data.sequence
+
+            // asynchronous wait ack from server
+            let callback = (msg: Message) => {
+                // remove from sendq
+                this.sendq.delete(seq)
+                resolve(new Response(true, msg))
+            }
+
+            this.sendq.set(seq, new Request(callback))
+
+            if (!this.send(JSON.stringify(data))) {
+                resolve(new Response(false))
+            }
+        })
     }
     send(data: string): boolean {
         try {

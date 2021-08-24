@@ -1,16 +1,20 @@
-import { IMClient, sleep } from "./sdk";
+import { WebsocketClient, Message, sleep } from "./sdk";
 import { w3cwebsocket, IMessageEvent, ICloseEvent } from 'websocket';
 
 const main = async () => {
-    let cli = new IMClient("ws://localhost:8000", "ccc");
-    let { status } = await cli.login()
-    console.log("client login return -- ", status)
+    let cli = new WebsocketClient("ws://localhost:8000", "ccc");
+    let { success } = await cli.login()
+    console.log("client login return -- ", success)
 
-    await sleep(15)
+    let req = new Message("hello")
+    let resp = await cli.request(req)
+    console.log("client request", req, "return", resp.message)
+
+    await sleep(5)
     cli.logout()
 }
 
-// main()
+main()
 
 let send = async (url: string) => {
     let conn = new w3cwebsocket(url)
@@ -22,7 +26,7 @@ let send = async (url: string) => {
             conn.send(req)
         }
     }
- 
+
     conn.onclose = (e: ICloseEvent) => {
         console.debug("event[onclose] fired")
     }
@@ -35,4 +39,4 @@ let send = async (url: string) => {
     await sleep(5)
 }
 
-send("ws://localhost:8000?user=aaa")
+// send("ws://localhost:8000?user=aaa")

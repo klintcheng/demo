@@ -135,9 +135,10 @@ func (s *Server) readloop(user string, conn net.Conn) error {
 }
 
 type Message struct {
-	Seq  int    `json:"seq"`
-	Msg  string `json:"msg"`
-	From string `json:"from"`
+	Sequence int    `json:"sequence,omitempty"`
+	Type     int    `json:"type,omitempty"`
+	Message  string `json:"message,omitempty"`
+	From     string `json:"from,omitempty"`
 }
 
 func (m *Message) MarshalJSON() []byte {
@@ -158,6 +159,7 @@ func (s *Server) handle(user string, text string) {
 	defer s.Unlock()
 	msg := parseMessage(text)
 	msg.From = user
+	msg.Type = 3 //notify type
 	notice := msg.MarshalJSON()
 	for u, conn := range s.users {
 		if u == user {
@@ -172,8 +174,9 @@ func (s *Server) handle(user string, text string) {
 
 	conn := s.users[user]
 	resp := Message{
-		Seq: msg.Seq,
-		Msg: "ok",
+		Sequence: msg.Sequence,
+		Type:     2, //response type
+		Message:  "ok",
 	}
 	_ = s.writeText(conn, resp.MarshalJSON())
 }
